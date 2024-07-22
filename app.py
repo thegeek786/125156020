@@ -306,3 +306,5 @@ def record_audio():
         wf.setsampwidth(np.dtype(dtype).itemsize)
         wf.setframerate(fs)
         wf.writeframes(audio_data.tobytes())
+if __name__ == '__main__':
+    app.run(debug=True)

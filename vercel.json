@@ -1,16 +1,10 @@
 {
-    "version":2,
-    "builds": [
-        {
-            "src":"./index.py",
-            "use": "@vercel/python",
-            "config":{"runtime":"python3.8"}
-        }
-    ],
-    "routes": [
-        {
-            "src":"/(.*)",
-            "dest":"/"
-        }
-    ]
+  "version": 2,
+  "builds": [
+    { "src": "app.py", "use": "@vercel/python" },
+    { "src": "build.sh", "use": "@vercel/static-build", "config": { "distDir": "dist" } }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "app.py" }
+  ]
 }

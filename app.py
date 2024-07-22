@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify, render_template_string, send_file
 import os
-import speech_recognition as sr
-import pyttsx3
+import sounddevice as sd
+import numpy as np
 import wave
-import pyaudio
 import threading
 from googletrans import Translator
+import speech_recognition as sr
+import pyttsx3
 
 app = Flask(__name__)
 
@@ -282,26 +283,26 @@ def record_audio():
     global audio_file
     global stop_recording_event
 
-    audio = pyaudio.PyAudio()
-    stream = audio.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
+    fs = 44100  # Sample rate
+    channels = 1  # Number of audio channels
+    dtype = 'int16'  # Data type of the audio samples
 
-    frames = []
+    # Define the recording callback
+    def callback(indata, frames, time, status):
+        if stop_recording_event.is_set():
+            raise sd.CallbackStop()
+        frames_queue.append(indata.copy())
 
-    while not stop_recording_event.is_set():
-        data = stream.read(1024)
-        frames.append(data)
+    frames_queue = []
+    with sd.InputStream(samplerate=fs, channels=channels, dtype=dtype, callback=callback):
+        stop_recording_event.wait()  # Wait until recording is stopped
 
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
+    # Combine all recorded frames
+    audio_data = np.concatenate(frames_queue, axis=0)
 
+    # Save as WAV file
     with wave.open(audio_file, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-        wf.setframerate(44100)
-        wf.writeframes(b''.join(frames))
-
-
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        wf.setnchannels(channels)
+        wf.setsampwidth(np.dtype(dtype).itemsize)
+        wf.setframerate(fs)
+        wf.writeframes(audio_data.tobytes())

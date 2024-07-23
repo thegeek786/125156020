@@ -1,125 +1,119 @@
 import streamlit as st
-import os
-import speech_recognition as sr
-import pyttsx3
+import sounddevice as sd
+import numpy as np
 import wave
-import pyaudio
 import threading
 from googletrans import Translator
+import speech_recognition as sr
+import pyttsx3
+import tempfile
 
 # Initialize text-to-speech engine and translator
 engine = pyttsx3.init()
 translator = Translator()
 
 # Global variables for recording
-recording = False
-audio_file = "recorded_audio.wav"
-translated_audio_file = "translated_audio.wav"
 stop_recording_event = threading.Event()
 
-# Define Streamlit UI
+def record_audio():
+    fs = 44100  # Sample rate
+    channels = 1  # Number of audio channels
+    dtype = 'int16'  # Data type of the audio samples
+
+    frames_queue = []
+
+    def callback(indata, frames, time, status):
+        if stop_recording_event.is_set():
+            raise sd.CallbackStop()
+        frames_queue.append(indata.copy())
+
+    with sd.InputStream(samplerate=fs, channels=channels, dtype=dtype, callback=callback):
+        stop_recording_event.wait()  # Wait until recording is stopped
+
+    audio_data = np.concatenate(frames_queue, axis=0)
+    return audio_data, fs, channels, dtype
+
+def save_audio_file(audio_data, fs, channels, dtype):
+    temp_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    with wave.open(temp_audio_file.name, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(np.dtype(dtype).itemsize)
+        wf.setframerate(fs)
+        wf.writeframes(audio_data.tobytes())
+    return temp_audio_file.name
+
+def convert_speech_to_text(filename):
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(filename) as source:
+        audio_data = recognizer.record(source)
+        try:
+            text = recognizer.recognize_google(audio_data)
+            return text
+        except sr.UnknownValueError:
+            return "Speech recognition could not understand audio"
+        except sr.RequestError:
+            return "Could not request results from Google Speech Recognition service"
+
+def text_to_speech(text, filename):
+    engine.save_to_file(text, filename)
+    engine.runAndWait()
+
 st.title("Speech-to-Text and Translation")
 
-if 'recording' not in st.session_state:
+# Check if recording state exists in session state
+if "recording" not in st.session_state:
     st.session_state.recording = False
 
-# Functions for recording
-def record_audio():
-    global stop_recording_event
+# Check if audio file path exists in session state
+if "audio_file" not in st.session_state:
+    st.session_state.audio_file = None
 
-    audio = pyaudio.PyAudio()
-    stream = audio.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
-
-    frames = []
-
-    while not stop_recording_event.is_set():
-        data = stream.read(1024)
-        frames.append(data)
-
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-
-    with wave.open(audio_file, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-        wf.setframerate(44100)
-        wf.writeframes(b''.join(frames))
-
-# Start recording
 if st.button("Start Recording"):
     if not st.session_state.recording:
         st.session_state.recording = True
         stop_recording_event.clear()
-        thread = threading.Thread(target=record_audio)
+        thread = threading.Thread(target=lambda: st.session_state.update(audio_data=record_audio()))
         thread.start()
         st.success("Recording started")
     else:
         st.warning("Already recording")
 
-# Stop recording
 if st.button("Stop Recording"):
     if st.session_state.recording:
         stop_recording_event.set()  # Signal to stop recording
         st.session_state.recording = False
+        thread.join()
+        audio_data, fs, channels, dtype = st.session_state.audio_data
+        st.session_state.audio_file = save_audio_file(audio_data, fs, channels, dtype)
         st.success("Recording stopped")
     else:
         st.warning("No recording in progress")
 
-# Play recorded audio
-if st.button("Play Audio"):
-    if os.path.exists(audio_file):
-        st.audio(audio_file)
-    else:
-        st.error("No audio file found")
+if st.session_state.audio_file:
+    if st.button("Play Audio"):
+        st.audio(st.session_state.audio_file, format="audio/wav")
 
-# Speech-to-text conversion
-if st.button("Convert Speech to Text"):
-    if os.path.exists(audio_file):
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(audio_file) as source:
-            audio_data = recognizer.record(source)
-            try:
-                text = recognizer.recognize_google(audio_data)
-                st.text_area("Transcribed Text", value=text, height=200)
-            except sr.UnknownValueError:
-                st.error("Speech recognition could not understand audio")
-            except sr.RequestError:
-                st.error("Could not request results from Google Speech Recognition service")
-    else:
-        st.error("No audio file found")
+    if st.button("Convert Speech to Text"):
+        transcribed_text = convert_speech_to_text(st.session_state.audio_file)
+        st.session_state.transcribed_text = transcribed_text
+        st.text_area("Transcribed Text", transcribed_text)
 
-# Text input for translation
-text = st.text_input("Text for Translation")
+text_to_translate = st.text_input("Text for Translation")
+target_lang = st.selectbox("Target Language", ["en", "es", "fr", "de", "hi", "ta", "te", "ar"])
 
-# Language selection for translation
-target_lang = st.selectbox("Target Language", options=["en", "es", "fr", "de", "hi", "ta", "te", "ar"])
+if text_to_translate and st.button("Translate"):
+    try:
+        translated = translator.translate(text_to_translate, dest=target_lang)
+        translated_text = translated.text
+        st.session_state.translated_text = translated_text
+        st.success(f"Translated Text: {translated_text}")
 
-# Translate text
-if st.button("Translate"):
-    if text:
-        try:
-            translated = translator.translate(text, dest=target_lang)
-            translated_text = translated.text
+        translated_audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        text_to_speech(translated_text, translated_audio_file.name)
+        st.session_state.translated_audio_file = translated_audio_file.name
 
-            # Convert the translated text to speech
-            engine.save_to_file(translated_text, translated_audio_file)
-            engine.runAndWait()
+    except Exception as e:
+        st.error(f"Translation failed: {str(e)}")
 
-            st.success("Translation successful")
-            st.text_area("Translated Text", value=translated_text, height=200)
-
-            # Play translated audio
-            if os.path.exists(translated_audio_file):
-                st.audio(translated_audio_file)
-            else:
-                st.error("Failed to play translated audio")
-        except Exception as e:
-            st.error(f"Translation failed: {str(e)}")
-    else:
-        st.error("No text provided for translation")
-
-# Run the Streamlit app
-if __name__ == '__main__':
-    st.set_option('deprecation.showfileUploaderEncoding', False)
-    st.write("App is running...")
+if "translated_audio_file" in st.session_state and st.button("Play Translated Audio"):
+    st.audio(st.session_state.translated_audio_file, format="audio/wav")

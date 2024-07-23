@@ -1,4 +1,5 @@
 Flask==2.3.3
+pyaudio
 sounddevice==0.4.6
 numpy==1.24.3
 googletrans==4.0.0-rc1
